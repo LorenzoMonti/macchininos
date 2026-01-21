@@ -195,4 +195,31 @@ def run_parallel_pipeline():
                 # joblib.Parallel esegue la funzione su N core
                 # backend='loky' è default e robusto
                 results_funnel = Parallel(n_jobs=N_JOBS)(
-                    delayed(process_single_prediction)(row[0], row[1])
+                    delayed(process_single_prediction)(row[0], row[1]) 
+                    for row in rows_to_predict
+                )
+                
+                # Reinseriamo il filter_score che avevamo calcolato prima
+                for res, orig in zip(results_funnel, rows_to_predict):
+                    res["filter_score"] = round(orig[2], 6)
+            else:
+                results_funnel = []
+
+            # E. SALVATAGGIO
+            all_results = anomalies + results_funnel
+            if all_results:
+                df_res = pd.DataFrame(all_results)
+                df_res = df_res[csv_header]
+                df_res.to_csv(OUTPUT_PATH, mode='a', header=False, index=False)
+                processed_count += len(df_res)
+
+            pbar.update(chunk_len)
+            pbar.set_postfix(Preds=processed_count)
+            
+            del chunk, valid_chunk, X_scaled, rows_to_predict, results_funnel, all_results
+            gc.collect()
+
+    print(f"\n✅ COMPLETATO: {processed_count} predizioni salvate.")
+
+if __name__ == "__main__":
+    run_parallel_pipeline()
