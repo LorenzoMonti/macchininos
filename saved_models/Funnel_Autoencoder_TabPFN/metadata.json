@@ -1,0 +1,29 @@
+{
+    "features": [
+        "phi21",
+        "ephi21",
+        "phi31",
+        "ephi31",
+        "numberofgbandcleanepochs",
+        "p1",
+        "intaverageg",
+        "intaveragegerror",
+        "peaktopeakg",
+        "peaktopeakgerror",
+        "r21",
+        "er21",
+        "r31",
+        "er31",
+        "phirise",
+        "lcqualityflagg",
+        "nhg1"
+    ],
+    "filter_type": "Autoencoder",
+    "ae_threshold": 5.124348046369169e-05,
+    "rare_classes": [
+        2,
+        3,
+        4
+    ],
+    "model_type": "FUNNEL_TABPFN_V2"
+}
