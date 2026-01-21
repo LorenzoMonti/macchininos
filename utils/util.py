@@ -15,7 +15,8 @@ import tensorflow as tf
 from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.layers import Input, Dense
 from tensorflow.keras.optimizers import Adam
-
+import torch
+import functools
 
 from xgboost import XGBClassifier
 from imblearn.ensemble import BalancedRandomForestClassifier
@@ -959,7 +960,7 @@ def analyze_contaminants_statistics(path, features, label_col=None):
 
 def load_hierarchical_system(model_dir, exp_name):
     """
-    Carica l'intero sistema: Scaler, Filtro, 3 Classificatori (Funnel), LabelEncoder.
+    Carica l'intero sistema forzando il caricamento su CPU per evitare conflitti GPU.
     """
     path = os.path.join(model_dir, exp_name)
     if not os.path.exists(path):
@@ -979,25 +980,43 @@ def load_hierarchical_system(model_dir, exp_name):
     # 3. Carica Filtro (Autoencoder o IsolationForest)
     filter_type = metadata.get('filter_type', 'IsolationForest')
     if filter_type == 'Autoencoder':
-        ae_path = os.path.join(path, "filter_ae.keras")
-        if not os.path.exists(ae_path): ae_path = os.path.join(path, "filter_ae.h5")
+        # Cerca .h5 (che abbiamo creato) o .keras
+        ae_path = os.path.join(path, "filter_ae.h5")
+        if not os.path.exists(ae_path):
+             ae_path = os.path.join(path, "filter_ae.keras")
         
-        # Caricamento sicuro custom objects
+        # Caricamento Keras
         try:
             filter_model = tf.keras.models.load_model(ae_path, compile=False)
-        except:
+        except Exception as e:
+            print(f"⚠️ Tentativo caricamento custom objects: {e}")
             filter_model = tf.keras.models.load_model(ae_path, custom_objects={'mse': tf.keras.losses.MeanSquaredError()})
     else:
         filter_model = joblib.load(os.path.join(path, "filter_if.joblib"))
 
-    # 4. Carica i Classificatori del FUNNEL
+    # 4. Carica i Classificatori del FUNNEL (FIX PER CPU LOADING)
     models_dict = {}
+    
+    # --- INIZIO TRUCCO PER FORZARE CPU ---
+    # Salviamo la funzione originale
+    original_load = torch.load
+    
     try:
+        # Sovrascriviamo torch.load per forzare map_location='cpu'
+        # Questo intercetta le chiamate interne fatte da joblib/pickle
+        torch.load = functools.partial(original_load, map_location=torch.device('cpu'))
+        
+        print("   ⚙️  Forzatura caricamento pesi PyTorch su CPU...")
         models_dict['gatekeeper'] = joblib.load(os.path.join(path, "gatekeeper.joblib"))
         models_dict['specialist'] = joblib.load(os.path.join(path, "specialist.joblib"))
         models_dict['generalist'] = joblib.load(os.path.join(path, "generalist.joblib"))
+        
     except FileNotFoundError as e:
         raise FileNotFoundError(f"❌ Mancano i file dei modelli Funnel: {e}")
+    finally:
+        # --- FINE TRUCCO ---
+        # Ripristiniamo la funzione originale (molto importante!)
+        torch.load = original_load
 
     return {
         "scaler": scaler,
