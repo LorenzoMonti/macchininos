@@ -70,7 +70,7 @@ def run_pipeline():
         return
 
     # 2. Setup Output
-    output_dir = "evaluation_results"
+    output_dir = "evaluation"
     os.makedirs(output_dir, exist_ok=True)
     MY_OUTPUT_PATH = os.path.join(output_dir, f"results_{EXP_NAME}_shard_{worker_id}.csv")
     
