@@ -603,87 +603,6 @@ def train_hierarchical_classifier(X_train, y_train, rare_classes=[2, 3, 4], use_
         "generalist": clf_generalist
     }
 
-def predict_hierarchical_batch(X_scaled, models_dict, rare_label_merged=2, gate_threshold=0.05, spec_threshold=0.60):
-    """
-    Predizione a Imbuto con Confidence Check sullo Specialista.
-    
-    Parametri:
-    - gate_threshold (0.05): Il Gatekeeper lascia passare tutto ciò che ha >5% di probabilità di essere raro.
-    - spec_threshold (0.60): TabPFN deve essere sicuro almeno al 60% per confermare una rara.
-                             Altrimenti viene considerato un Falso Allarme.
-    """
-    clf_gate = models_dict["gatekeeper"]
-    clf_spec = models_dict["specialist"]
-    clf_gen  = models_dict["generalist"]
-    
-    n_samples = len(X_scaled)
-    final_preds = np.zeros(n_samples, dtype=int)
-    final_probs = np.zeros(n_samples, dtype=float)
-    
-    status_flags = np.full(n_samples, "Direct_Generalist", dtype=object)
-
-    # --- 1. GATEKEEPER (Balanced RF) ---
-    gate_probs_all = clf_gate.predict_proba(X_scaled)
-    classes_gate = clf_gate.classes_
-    try:
-        idx_rare = np.where(classes_gate == rare_label_merged)[0][0]
-        prob_is_rare = gate_probs_all[:, idx_rare]
-    except:
-        prob_is_rare = np.zeros(n_samples)
-
-    mask_to_specialist = (prob_is_rare >= gate_threshold)
-    mask_to_generalist = ~mask_to_specialist
-    
-    # Aggiorniamo status
-    status_flags[mask_to_specialist] = "Sent_to_Specialist"
-
-    # 2. GENERALIST (Percorso Diretto)
-    if np.any(mask_to_generalist):
-        X_gen = X_scaled[mask_to_generalist]
-        gen_preds = clf_gen.predict(X_gen)
-        gen_probs = np.max(clf_gen.predict_proba(X_gen), axis=1)
-        final_preds[mask_to_generalist] = gen_preds
-        final_probs[mask_to_generalist] = gen_probs
-
-    # 3. SPECIALIST
-    if np.any(mask_to_specialist):
-        X_spec = X_scaled[mask_to_specialist]
-        spec_preds = clf_spec.predict(X_spec)
-        spec_probs_all = clf_spec.predict_proba(X_spec)
-        spec_probs = np.max(spec_probs_all, axis=1)
-        
-        # Confidence Check
-        mask_uncertain_rare = (spec_preds == rare_label_merged) & (spec_probs < spec_threshold)
-        spec_preds[mask_uncertain_rare] = 99 
-        
-        mask_false_alarm = (spec_preds == 99)
-        
-        # Se era False Alarm, aggiorniamo lo status in "Rejected_by_Spec"
-        # Questi sono i candidati contaminanti!
-        # Dobbiamo mappare la maschera locale (mask_false_alarm) alla globale (mask_to_specialist)
-        
-        # Creiamo un array temporaneo di status per questo blocco
-        temp_status = status_flags[mask_to_specialist]
-        temp_status[mask_false_alarm] = "Rejected_by_Spec" # <--- I Contaminanti finiscono qui
-        temp_status[~mask_false_alarm] = "Confirmed_Rare"
-        status_flags[mask_to_specialist] = temp_status
-        
-        # Gestione predizioni (come prima)
-        temp_preds = spec_preds.copy()
-        temp_probs = spec_probs.copy()
-        
-        if np.any(mask_false_alarm):
-            X_retry = X_spec[mask_false_alarm]
-            retry_preds = clf_gen.predict(X_retry)
-            retry_probs = np.max(clf_gen.predict_proba(X_retry), axis=1)
-            temp_preds[mask_false_alarm] = retry_preds
-            temp_probs[mask_false_alarm] = retry_probs
-            
-        final_preds[mask_to_specialist] = temp_preds
-        final_probs[mask_to_specialist] = temp_probs
-
-    return final_preds, final_probs, status_flags
-
 def analyze_pipeline_components(X, y_true, models_dict, gate_thresh=0.05, spec_thresh=0.90):
     print(f"\n{'#'*60}")
     print(f"🔬 DIAGNOSTICA COMPONENTI PIPELINE")
@@ -1030,45 +949,82 @@ def load_hierarchical_system(model_dir, exp_name):
         "models_dict": models_dict
     }
 
-def predict_hierarchical_batch(X_sample, models_dict, gate_threshold=0.05, spec_threshold=0.90):
-    """Predizione Funnel standard"""
+def predict_hierarchical_batch(X_scaled, models_dict, rare_label_merged=2, gate_threshold=0.05, spec_threshold=0.60):
+    """
+    VERSIONE PER DATASET INTERI (BATCH)
+    Restituisce tre array numpy.
+    """
+    clf_gate = models_dict["gatekeeper"]
+    clf_spec = models_dict["specialist"]
+    clf_gen  = models_dict["generalist"]
+    
+    n_samples = len(X_scaled)
+    final_preds = np.zeros(n_samples, dtype=int)
+    final_probs = np.zeros(n_samples, dtype=float)
+    status_flags = np.full(n_samples, "Direct_Generalist", dtype=object)
+
+    # 1. GATEKEEPER
+    gate_probs_all = clf_gate.predict_proba(X_scaled)
+    idx_rare = np.where(clf_gate.classes_ == rare_label_merged)[0][0]
+    prob_is_rare = gate_probs_all[:, idx_rare]
+
+    mask_to_specialist = (prob_is_rare >= gate_threshold)
+    mask_to_generalist = ~mask_to_specialist
+    status_flags[mask_to_specialist] = "Sent_to_Specialist"
+
+    # 2. GENERALIST (Percorso diretto)
+    if np.any(mask_to_generalist):
+        X_gen = X_scaled[mask_to_generalist]
+        final_preds[mask_to_generalist] = clf_gen.predict(X_gen)
+        final_probs[mask_to_generalist] = np.max(clf_gen.predict_proba(X_gen), axis=1)
+
+    # 3. SPECIALIST
+    if np.any(mask_to_specialist):
+        X_spec = X_scaled[mask_to_specialist]
+        spec_preds = clf_spec.predict(X_spec)
+        spec_probs_all = clf_spec.predict_proba(X_spec)
+        spec_probs = np.max(spec_probs_all, axis=1)
+        
+        # Confidence Check
+        mask_uncertain_rare = (spec_preds == rare_label_merged) & (spec_probs < spec_threshold)
+        spec_preds[mask_uncertain_rare] = 99 
+        
+        mask_false_alarm = (spec_preds == 99)
+        
+        # Aggiornamento status
+        temp_status = status_flags[mask_to_specialist]
+        temp_status[mask_false_alarm] = "Rejected_by_Spec"
+        temp_status[~mask_false_alarm] = "Confirmed_Rare"
+        status_flags[mask_to_specialist] = temp_status
+        
+        if np.any(mask_false_alarm):
+            X_retry = X_spec[mask_false_alarm]
+            spec_preds[mask_false_alarm] = clf_gen.predict(X_retry)
+            spec_probs[mask_false_alarm] = np.max(clf_gen.predict_proba(X_retry), axis=1)
+            
+        final_preds[mask_to_specialist] = spec_preds
+        final_probs[mask_to_specialist] = spec_probs
+
+    return final_preds, final_probs, status_flags
+
+def predict_hierarchical_single(X_sample, models_dict, gate_threshold=0.05, spec_threshold=0.90):
+    """
+    VERSIONE PER SINGOLO CAMPIONE (INFERENZA)
+    Restituisce un dizionario.
+    """
     if X_sample.ndim == 1:
         X_sample = X_sample.reshape(1, -1)
-
-    gatekeeper = models_dict['gatekeeper']
-    specialist = models_dict['specialist']
-    generalist = models_dict['generalist']
-
-    # 1. Gatekeeper
-    gate_probs = gatekeeper.predict_proba(X_sample)[0]
-    prob_rare = gate_probs[1] 
-
-    stage = "Generalist (Gate)"
-    final_class = None
-    final_conf = 0.0
-
-    if prob_rare >= gate_threshold:
-        # 2. Specialist
-        spec_probs = specialist.predict_proba(X_sample)[0]
-        max_spec_idx = np.argmax(spec_probs)
-        max_spec_conf = spec_probs[max_spec_idx]
-        pred_spec_global = specialist.classes_[max_spec_idx]
-
-        if max_spec_conf >= spec_threshold:
-            final_class = pred_spec_global
-            final_conf = max_spec_conf
-            stage = "Specialist"
-        else:
-            stage = "Generalist (Fallback)"
     
-    # 3. Generalist
-    if stage.startswith("Generalist"):
-        gen_probs = generalist.predict_proba(X_sample)[0]
-        max_gen_idx = np.argmax(gen_probs)
-        final_conf = gen_probs[max_gen_idx]
-        final_class = generalist.classes_[max_gen_idx]
-
-    return {"class": final_class, "confidence": final_conf, "stage": stage}
+    # Usa la versione batch internamente per coerenza
+    preds, confs, flags = predict_hierarchical_batch(X_sample, models_dict, 
+                                                    gate_threshold=gate_threshold, 
+                                                    spec_threshold=spec_threshold)
+    
+    return {
+        "class": preds[0],
+        "confidence": confs[0],
+        "stage": flags[0]
+    }
 
 def check_anomaly_ae(autoencoder, X_sample, threshold, return_mse=False):
     """
@@ -1139,51 +1095,7 @@ def compare_filters(iso_forest, autoencoder, ae_threshold, X_valid, X_noise):
         return "IsolationForest"
     else:
         return "Autoencoder"
-def predict_hierarchical_batch(X_sample, models_dict, gate_threshold=0.05, spec_threshold=0.90):
-    """
-    Logica a Imbuto: Gatekeeper -> Specialist (se rara) -> Generalist (fallback).
-    """
-    if X_sample.ndim == 1:
-        X_sample = X_sample.reshape(1, -1)
 
-    gatekeeper = models_dict['gatekeeper']
-    specialist = models_dict['specialist']
-    generalist = models_dict['generalist']
-
-    # 1. Gatekeeper
-    gate_probs = gatekeeper.predict_proba(X_sample)[0]
-    prob_rare = gate_probs[1] # Assumiamo indice 1 = Rara
-
-    stage = "Generalist (Gate)"
-    final_class = None
-    final_conf = 0.0
-
-    if prob_rare >= gate_threshold:
-        # 2. Specialist
-        spec_probs = specialist.predict_proba(X_sample)[0]
-        max_spec_idx = np.argmax(spec_probs)
-        max_spec_conf = spec_probs[max_spec_idx]
-        pred_spec_global = specialist.classes_[max_spec_idx]
-
-        if max_spec_conf >= spec_threshold:
-            final_class = pred_spec_global
-            final_conf = max_spec_conf
-            stage = "Specialist"
-        else:
-            stage = "Generalist (Fallback)"
-    
-    # 3. Generalist
-    if stage.startswith("Generalist"):
-        gen_probs = generalist.predict_proba(X_sample)[0]
-        max_gen_idx = np.argmax(gen_probs)
-        final_conf = gen_probs[max_gen_idx]
-        final_class = generalist.classes_[max_gen_idx]
-
-    return {
-        "class": final_class,
-        "confidence": final_conf,
-        "stage": stage
-    }
 
 def check_anomaly_ae(autoencoder, X_sample, threshold, return_mse=False):
     """
@@ -1224,15 +1136,15 @@ def full_pipeline_predict(raw_data, system, threshold=0.90):
     if is_unknown: return "SCONOSCIUTO (Filtro)"
     
     # 2. Imbuto
-    preds, confs, flags = predict_hierarchical_batch(
+    res = predict_hierarchical_single(
         data_scaled, 
         system['models_dict'],
         spec_threshold=threshold
     )
     
-    pred_class = int(preds[0])
-    confidence = float(confs[0])
-    status = flags[0]
+    pred_class = int(res["class"])
+    confidence = float(res["confidence"])
+    status = res["stage"]
 
     label_str = str(pred_class)
     if 'le' in system and system['le']:
