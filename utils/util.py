@@ -15,8 +15,6 @@ import tensorflow as tf
 from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.layers import Input, Dense
 from tensorflow.keras.optimizers import Adam
-import torch
-import functools
 
 from xgboost import XGBClassifier
 from imblearn.ensemble import BalancedRandomForestClassifier
@@ -960,7 +958,8 @@ def analyze_contaminants_statistics(path, features, label_col=None):
 
 def load_hierarchical_system(model_dir, exp_name):
     """
-    Carica l'intero sistema forzando il caricamento su CPU per evitare conflitti GPU.
+    Caricamento standard.
+    Richiede che l'ambiente abbia GPU se i modelli sono stati salvati su GPU.
     """
     path = os.path.join(model_dir, exp_name)
     if not os.path.exists(path):
@@ -968,55 +967,48 @@ def load_hierarchical_system(model_dir, exp_name):
 
     print(f"📂 Caricamento modelli da: {path}")
 
-    # 1. Carica Metadata
+    # 1. Metadata
     meta_path = os.path.join(path, "metadata.json")
     with open(meta_path, 'r') as f:
         metadata = json.load(f)
 
-    # 2. Carica Scaler e LabelEncoder
+    # 2. Scaler & LabelEncoder
     scaler = joblib.load(os.path.join(path, "scaler.joblib"))
     le = joblib.load(os.path.join(path, "le.joblib"))
 
-    # 3. Carica Filtro (Autoencoder o IsolationForest)
+    # 3. Filtro (Keras Autoencoder o IsolationForest)
     filter_type = metadata.get('filter_type', 'IsolationForest')
+    filter_model = None
+    
     if filter_type == 'Autoencoder':
-        # Cerca .h5 (che abbiamo creato) o .keras
-        ae_path = os.path.join(path, "filter_ae.h5")
-        if not os.path.exists(ae_path):
-             ae_path = os.path.join(path, "filter_ae.keras")
+        # Cerca prima .h5 (più stabile), poi .keras
+        ae_path_h5 = os.path.join(path, "filter_ae.h5")
+        ae_path_keras = os.path.join(path, "filter_ae.keras")
         
-        # Caricamento Keras
+        target_path = ae_path_h5 if os.path.exists(ae_path_h5) else ae_path_keras
+        
         try:
-            filter_model = tf.keras.models.load_model(ae_path, compile=False)
+            print(f"   🔌 Caricamento Keras da: {os.path.basename(target_path)}")
+            filter_model = tf.keras.models.load_model(target_path, compile=False)
         except Exception as e:
-            print(f"⚠️ Tentativo caricamento custom objects: {e}")
-            filter_model = tf.keras.models.load_model(ae_path, custom_objects={'mse': tf.keras.losses.MeanSquaredError()})
+            print(f"   ⚠️ Fallito caricamento standard, riprovo con custom objects: {e}")
+            filter_model = tf.keras.models.load_model(
+                target_path, 
+                custom_objects={'mse': tf.keras.losses.MeanSquaredError()}
+            )
     else:
         filter_model = joblib.load(os.path.join(path, "filter_if.joblib"))
 
-    # 4. Carica i Classificatori del FUNNEL (FIX PER CPU LOADING)
+    # 4. Classificatori Funnel (Joblib Standard)
     models_dict = {}
-    
-    # --- INIZIO TRUCCO PER FORZARE CPU ---
-    # Salviamo la funzione originale
-    original_load = torch.load
-    
     try:
-        # Sovrascriviamo torch.load per forzare map_location='cpu'
-        # Questo intercetta le chiamate interne fatte da joblib/pickle
-        torch.load = functools.partial(original_load, map_location=torch.device('cpu'))
-        
-        print("   ⚙️  Forzatura caricamento pesi PyTorch su CPU...")
+        print("   ⚙️  Caricamento modelli TabPFN (Joblib standard)...")
+        # Joblib gestirà internamente torch se necessario, usando la GPU disponibile
         models_dict['gatekeeper'] = joblib.load(os.path.join(path, "gatekeeper.joblib"))
         models_dict['specialist'] = joblib.load(os.path.join(path, "specialist.joblib"))
         models_dict['generalist'] = joblib.load(os.path.join(path, "generalist.joblib"))
-        
-    except FileNotFoundError as e:
-        raise FileNotFoundError(f"❌ Mancano i file dei modelli Funnel: {e}")
-    finally:
-        # --- FINE TRUCCO ---
-        # Ripristiniamo la funzione originale (molto importante!)
-        torch.load = original_load
+    except Exception as e:
+        raise RuntimeError(f"❌ Errore caricamento modelli Funnel: {e}")
 
     return {
         "scaler": scaler,
@@ -1028,6 +1020,54 @@ def load_hierarchical_system(model_dir, exp_name):
         "rare_classes": metadata.get('rare_classes', []),
         "models_dict": models_dict
     }
+
+def predict_hierarchical_batch(X_sample, models_dict, gate_threshold=0.05, spec_threshold=0.90):
+    """Predizione Funnel standard"""
+    if X_sample.ndim == 1:
+        X_sample = X_sample.reshape(1, -1)
+
+    gatekeeper = models_dict['gatekeeper']
+    specialist = models_dict['specialist']
+    generalist = models_dict['generalist']
+
+    # 1. Gatekeeper
+    gate_probs = gatekeeper.predict_proba(X_sample)[0]
+    prob_rare = gate_probs[1] 
+
+    stage = "Generalist (Gate)"
+    final_class = None
+    final_conf = 0.0
+
+    if prob_rare >= gate_threshold:
+        # 2. Specialist
+        spec_probs = specialist.predict_proba(X_sample)[0]
+        max_spec_idx = np.argmax(spec_probs)
+        max_spec_conf = spec_probs[max_spec_idx]
+        pred_spec_global = specialist.classes_[max_spec_idx]
+
+        if max_spec_conf >= spec_threshold:
+            final_class = pred_spec_global
+            final_conf = max_spec_conf
+            stage = "Specialist"
+        else:
+            stage = "Generalist (Fallback)"
+    
+    # 3. Generalist
+    if stage.startswith("Generalist"):
+        gen_probs = generalist.predict_proba(X_sample)[0]
+        max_gen_idx = np.argmax(gen_probs)
+        final_conf = gen_probs[max_gen_idx]
+        final_class = generalist.classes_[max_gen_idx]
+
+    return {"class": final_class, "confidence": final_conf, "stage": stage}
+
+def check_anomaly_ae(autoencoder, X_sample, threshold, return_mse=False):
+    # Keras predict è ottimizzato
+    reconstructed = autoencoder.predict(X_sample, verbose=0)
+    mse = np.mean(np.power(X_sample - reconstructed, 2), axis=1)[0]
+    is_anomaly = mse > threshold
+    if return_mse: return is_anomaly, mse
+    return [is_anomaly]
 
 def predict_hierarchical_batch(X_sample, models_dict, gate_threshold=0.05, spec_threshold=0.90):
     """
