@@ -884,6 +884,46 @@ def analyze_contaminants_statistics(path, features, label_col=None):
 # 4. GESTIONE I/O (SALVATAGGIO/CARICAMENTO)
 # ==========================================
 
+def save_hierarchical_system(save_dir, exp_name, scaler, filter_model, filter_type, models_dict, features, rare_classes, ae_thresh=None, le=None):
+    """
+    Salva l'intero ecosistema di modelli in una cartella specifica.
+    """
+    import json
+    path = os.path.join(save_dir, exp_name)
+    os.makedirs(path, exist_ok=True)
+    
+    print(f"💾 Salvataggio sistema in: {path}")
+    
+    # 1. Salva Scaler e LabelEncoder
+    joblib.dump(scaler, os.path.join(path, "scaler.joblib"))
+    if le:
+        joblib.dump(le, os.path.join(path, "le.joblib"))
+    
+    # 2. Salva il Filtro (Anomaly Detector)
+    if filter_type == "Autoencoder":
+        # I modelli Keras si salvano in formato .h5 o .keras
+        filter_model.save(os.path.join(path, "filter_ae.h5"))
+    else:
+        joblib.dump(filter_model, os.path.join(path, "filter_if.joblib"))
+        
+    # 3. Salva i componenti del Funnel
+    joblib.dump(models_dict['gatekeeper'], os.path.join(path, "gatekeeper.joblib"))
+    joblib.dump(models_dict['specialist'], os.path.join(path, "specialist.joblib"))
+    joblib.dump(models_dict['generalist'], os.path.join(path, "generalist.joblib"))
+    
+    # 4. Salva i Metadati (Features e Soglie)
+    metadata = {
+        "features": features,
+        "rare_classes": [int(c) for c in rare_classes],
+        "filter_type": filter_type,
+        "ae_threshold": float(ae_thresh) if ae_thresh is not None else None,
+        "exp_name": exp_name
+    }
+    with open(os.path.join(path, "metadata.json"), "w") as f:
+        json.dump(metadata, f, indent=4)
+        
+    print("✅ Salvataggio completato!")
+
 def load_hierarchical_system(model_dir, exp_name):
     """
     Caricamento standard.
