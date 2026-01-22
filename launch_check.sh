@@ -4,7 +4,7 @@
 #SBATCH --time=00:10:00          # Bastano 10 minuti
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:1             # Richiediamo esplicitamente 1 GPU
+#SBATCH --gres=gpu:4             # Richiediamo esplicitamente 4 GPU
 #SBATCH --mem=16000
 #SBATCH --job-name=check_gpu
 #SBATCH --output=check_gpu.out
@@ -15,7 +15,7 @@ module load profile/deeplrn
 module load cineca-ai/4.1.1
 
 # Attiva ambiente
-source met/bin/activate
+source macch/bin/activate
 
 # Opzionale: Configurazione TF per evitare errori noti
 export TF_CPP_MIN_LOG_LEVEL=2

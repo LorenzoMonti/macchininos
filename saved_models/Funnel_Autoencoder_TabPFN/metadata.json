@@ -18,12 +18,12 @@
         "lcqualityflagg",
         "nhg1"
     ],
-    "filter_type": "Autoencoder",
-    "ae_threshold": 5.124348046369169e-05,
     "rare_classes": [
         2,
         3,
         4
     ],
-    "model_type": "FUNNEL_TABPFN_V2"
+    "filter_type": "Autoencoder",
+    "ae_threshold": 4.709302350773351e-05,
+    "exp_name": "Funnel_Autoencoder_TabPFN"
 }

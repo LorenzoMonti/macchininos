@@ -583,7 +583,7 @@ def train_hierarchical_classifier(X_train, y_train, rare_classes=[2, 3, 4], use_
     print(f"      [2/3] Training Specialist (TabPFN): {len(X_spec)} samples.")
     print(f"            ({len(y_rare_final)} Rare Reali vs {len(y_bg)} Comuni Random)")
     
-    clf_specialist = TabPFNClassifier(device='auto', n_estimators=32)
+    clf_specialist = TabPFNClassifier(device='cuda', n_estimators=32)
     clf_specialist.fit(X_spec, y_spec)
     
     # --- 3. GENERALIST (XGBoost) ---
