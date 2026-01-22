@@ -388,42 +388,51 @@ def generate_synthetic_noise(X_sample, n_samples=200):
     # Genera rumore random tra -0.2 e 1.2 (per dati scalati 0-1)
     return np.random.uniform(low=-0.2, high=1.2, size=(n_samples, input_dim))
 
-def compare_filters(iso_forest, autoencoder, ae_threshold, X_test, X_noise):
-    """
-    Confronta i filtri basandosi su Score Combinato = (Acc_Buoni + Acc_Rumore)/2.
-    In caso di pareggio, vince chi protegge meglio dal rumore.
-    """
-    print("\n--- CONFRONTO FILTRI ---")
+def compare_filters(iso_forest, autoencoder, ae_threshold, X_valid, X_noise):
+    print(f"   ⚔️  Confronto Filtri...")
+
+    # 1. Isolation Forest
+    # 1 = Inlier (Normale), -1 = Outlier (Anomalia)
+    if_valid_preds = iso_forest.predict(X_valid)
+    acc_if_valid = np.mean(if_valid_preds == 1) # Vogliamo che siano 1
+
+    if X_noise is not None:
+        if_noise_preds = iso_forest.predict(X_noise)
+        acc_if_noise = np.mean(if_noise_preds == -1) # Vogliamo che siano -1
+    else:
+        acc_if_noise = 0.0
+
+    # 2. Autoencoder
+    # check_anomaly_ae ora restituisce un array booleano (True=Anomalia)
+    ae_test_preds = check_anomaly_ae(autoencoder, X_valid, ae_threshold)
     
-    # Isolation Forest
-    if_test = iso_forest.predict(X_test)
-    if_noise = iso_forest.predict(X_noise)
-    acc_if_valid = np.mean(if_test == 1)
-    acc_if_noise = np.mean(if_noise == -1)
-    score_if = (acc_if_valid + acc_if_noise) / 2
-
-    # Autoencoder
-    ae_test = check_anomaly_ae(autoencoder, X_test, ae_threshold)
-    ae_noise = check_anomaly_ae(autoencoder, X_noise, ae_threshold)
-    acc_ae_valid = np.mean(~ae_test)
-    acc_ae_noise = np.mean(ae_noise)
-    score_ae = (acc_ae_valid + acc_ae_noise) / 2
-
-    print(f"{'Metodo':<20} | {'Acc. Buoni':<10} | {'Acc. Rumore':<10} | {'SCORE':<10}")
-    print("-" * 60)
-    print(f"{'Isolation Forest':<20} | {acc_if_valid:.2%}     | {acc_if_noise:.2%}    | {score_if:.4f}")
-    print(f"{'Autoencoder':<20} | {acc_ae_valid:.2%}     | {acc_ae_noise:.2%}    | {score_ae:.4f}")
-
-    # Logica Decisionale
-    margin = 0.015
-    if abs(score_if - score_ae) > margin:
-        return "IsolationForest" if score_if > score_ae else "Autoencoder"
+    # FIX: Convertiamo esplicitamente in array per sicurezza (anche se la nuova funzione lo fa già)
+    ae_test_preds = np.array(ae_test_preds)
     
-    # Tie-Breaker: Vince chi blocca meglio il rumore
-    print(">>> Punteggio simile. Applico Tie-Breaker (Safety First).")
-    if acc_if_noise >= acc_ae_noise:
+    # ~ae_test_preds inverte i booleani: True(Anomalia) diventa False.
+    # Noi vogliamo contare i NON anomali (Normali) nel validation set.
+    acc_ae_valid = np.mean(~ae_test_preds)
+
+    if X_noise is not None:
+        ae_noise_preds = check_anomaly_ae(autoencoder, X_noise, ae_threshold)
+        ae_noise_preds = np.array(ae_noise_preds)
+        # Qui vogliamo che siano anomali (True)
+        acc_ae_noise = np.mean(ae_noise_preds)
+    else:
+        acc_ae_noise = 0.0
+
+    print(f"      IsolationForest -> Valid Acc: {acc_if_valid:.2%}, Noise Rej: {acc_if_noise:.2%}")
+    print(f"      Autoencoder     -> Valid Acc: {acc_ae_valid:.2%}, Noise Rej: {acc_ae_noise:.2%}")
+
+    # Logica di scelta: Privilegiamo chi scarta meglio il rumore, 
+    # ma deve mantenere almeno il 95% dei dati buoni.
+    score_if = acc_if_noise if acc_if_valid > 0.95 else acc_if_noise - 0.5
+    score_ae = acc_ae_noise if acc_ae_valid > 0.95 else acc_ae_noise - 0.5
+    
+    if score_if > score_ae:
         return "IsolationForest"
-    return "Autoencoder"
+    else:
+        return "Autoencoder"
 
 # ==========================================
 # 3. CLASSIFICATORE MULTI-CLASSE
@@ -1062,13 +1071,74 @@ def predict_hierarchical_batch(X_sample, models_dict, gate_threshold=0.05, spec_
     return {"class": final_class, "confidence": final_conf, "stage": stage}
 
 def check_anomaly_ae(autoencoder, X_sample, threshold, return_mse=False):
-    # Keras predict è ottimizzato
-    reconstructed = autoencoder.predict(X_sample, verbose=0)
-    mse = np.mean(np.power(X_sample - reconstructed, 2), axis=1)[0]
-    is_anomaly = mse > threshold
-    if return_mse: return is_anomaly, mse
-    return [is_anomaly]
+    """
+    Versione corretta che gestisce sia singole righe che interi batch (dataset completi).
+    Restituisce NumPy Array (non liste), risolvendo l'errore del ~
+    """
+    # Assicuriamo che l'input sia 2D
+    if X_sample.ndim == 1:
+        X_sample = X_sample.reshape(1, -1)
 
+    # Predizione (batch)
+    reconstructed = autoencoder.predict(X_sample, verbose=0)
+    
+    # Calcolo MSE per ogni riga (axis=1)
+    # NOTA: Rimosso [0] che c'era nelle versioni precedenti per supportare batch size > 1
+    mse = np.mean(np.power(X_sample - reconstructed, 2), axis=1)
+    
+    # Confronto vettorizzato
+    is_anomaly = mse > threshold
+    
+    if return_mse:
+        return is_anomaly, mse
+        
+    return is_anomaly  # Restituisce un numpy array di booleani
+
+def compare_filters(iso_forest, autoencoder, ae_threshold, X_valid, X_noise):
+    print(f"   ⚔️  Confronto Filtri...")
+
+    # 1. Isolation Forest
+    # 1 = Inlier (Normale), -1 = Outlier (Anomalia)
+    if_valid_preds = iso_forest.predict(X_valid)
+    acc_if_valid = np.mean(if_valid_preds == 1) # Vogliamo che siano 1
+
+    if X_noise is not None:
+        if_noise_preds = iso_forest.predict(X_noise)
+        acc_if_noise = np.mean(if_noise_preds == -1) # Vogliamo che siano -1
+    else:
+        acc_if_noise = 0.0
+
+    # 2. Autoencoder
+    # check_anomaly_ae ora restituisce un array booleano (True=Anomalia)
+    ae_test_preds = check_anomaly_ae(autoencoder, X_valid, ae_threshold)
+    
+    # FIX: Convertiamo esplicitamente in array per sicurezza (anche se la nuova funzione lo fa già)
+    ae_test_preds = np.array(ae_test_preds)
+    
+    # ~ae_test_preds inverte i booleani: True(Anomalia) diventa False.
+    # Noi vogliamo contare i NON anomali (Normali) nel validation set.
+    acc_ae_valid = np.mean(~ae_test_preds)
+
+    if X_noise is not None:
+        ae_noise_preds = check_anomaly_ae(autoencoder, X_noise, ae_threshold)
+        ae_noise_preds = np.array(ae_noise_preds)
+        # Qui vogliamo che siano anomali (True)
+        acc_ae_noise = np.mean(ae_noise_preds)
+    else:
+        acc_ae_noise = 0.0
+
+    print(f"      IsolationForest -> Valid Acc: {acc_if_valid:.2%}, Noise Rej: {acc_if_noise:.2%}")
+    print(f"      Autoencoder     -> Valid Acc: {acc_ae_valid:.2%}, Noise Rej: {acc_ae_noise:.2%}")
+
+    # Logica di scelta: Privilegiamo chi scarta meglio il rumore, 
+    # ma deve mantenere almeno il 95% dei dati buoni.
+    score_if = acc_if_noise if acc_if_valid > 0.95 else acc_if_noise - 0.5
+    score_ae = acc_ae_noise if acc_ae_valid > 0.95 else acc_ae_noise - 0.5
+    
+    if score_if > score_ae:
+        return "IsolationForest"
+    else:
+        return "Autoencoder"
 def predict_hierarchical_batch(X_sample, models_dict, gate_threshold=0.05, spec_threshold=0.90):
     """
     Logica a Imbuto: Gatekeeper -> Specialist (se rara) -> Generalist (fallback).
@@ -1116,12 +1186,28 @@ def predict_hierarchical_batch(X_sample, models_dict, gate_threshold=0.05, spec_
     }
 
 def check_anomaly_ae(autoencoder, X_sample, threshold, return_mse=False):
+    """
+    Versione corretta che gestisce sia singole righe che interi batch (dataset completi).
+    Restituisce NumPy Array (non liste), risolvendo l'errore del ~
+    """
+    # Assicuriamo che l'input sia 2D
+    if X_sample.ndim == 1:
+        X_sample = X_sample.reshape(1, -1)
+
+    # Predizione (batch)
     reconstructed = autoencoder.predict(X_sample, verbose=0)
-    mse = np.mean(np.power(X_sample - reconstructed, 2), axis=1)[0]
+    
+    # Calcolo MSE per ogni riga (axis=1)
+    # NOTA: Rimosso [0] che c'era nelle versioni precedenti per supportare batch size > 1
+    mse = np.mean(np.power(X_sample - reconstructed, 2), axis=1)
+    
+    # Confronto vettorizzato
     is_anomaly = mse > threshold
+    
     if return_mse:
         return is_anomaly, mse
-    return [is_anomaly]
+        
+    return is_anomaly  # Restituisce un numpy array di booleani
 
 def full_pipeline_predict(raw_data, system, threshold=0.90): 
     """Wrapper Imbuto."""
