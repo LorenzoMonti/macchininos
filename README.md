@@ -42,7 +42,7 @@ sbatch launch_multi_gpu.sh
 
 ## 📊 Interpretazione dei Risultati (CSV Output)
 
-I file CSV generati in `evaluation_results/` hanno la seguente struttura:
+I file CSV generati in `evaluation/` hanno la seguente struttura:
 `id, status, pred_label, confidence, stage, filter_score`
 
 ### Esempi e Spiegazione Colonne:
@@ -100,6 +100,6 @@ print(f"Predizione: {res['class']} via {res['stage']} (Conf: {res['confidence']}
 *   **Sharding**: Ogni GPU scrive un file separato (`results_shard_X.csv`).
 *   **Unione Risultati**: Per unire i file prodotti dalle 4 GPU in uno solo, usa:
     ```bash
-    cat evaluation_results/results_shard_*.csv > evaluation_results/final_all_results.csv
+    cat evaluation/results_shard_*.csv > evaluation/final_all_results.csv
     ```
 *   **Requisiti**: Assicurati che i moduli `cineca-ai` siano caricati correttamente per sfruttare le librerie PyTorch/TensorFlow ottimizzate.

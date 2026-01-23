@@ -988,6 +988,7 @@ def load_hierarchical_system(model_dir, exp_name):
         "rare_classes": metadata.get('rare_classes', []),
         "models_dict": models_dict
     }
+
 def predict_hierarchical_batch(X_scaled, models_dict, rare_label_merged=2, gate_threshold=0.05, spec_threshold=0.90):
     clf_gate = models_dict["gatekeeper"]
     clf_spec = models_dict["specialist"]
