@@ -988,68 +988,66 @@ def load_hierarchical_system(model_dir, exp_name):
         "rare_classes": metadata.get('rare_classes', []),
         "models_dict": models_dict
     }
-def predict_hierarchical_batch(X_scaled, models_dict, gate_threshold=0.05, spec_threshold=0.90):
-    """
-    VERSIONE TOTALMENTE VETTORIZZATA PER GPU.
-    Processa migliaia di righe contemporaneamente.
-    """
+def predict_hierarchical_batch(X_scaled, models_dict, rare_label_merged=2, gate_threshold=0.05, spec_threshold=0.90):
     clf_gate = models_dict["gatekeeper"]
     clf_spec = models_dict["specialist"]
     clf_gen  = models_dict["generalist"]
     
-    n_samples = X_scaled.shape[0]
+    n_samples = len(X_scaled)
     final_preds = np.zeros(n_samples, dtype=int)
     final_probs = np.zeros(n_samples, dtype=float)
-    status_flags = np.full(n_samples, "Generalist_Direct", dtype=object)
+    status_flags = np.full(n_samples, "Direct_Generalist", dtype=object)
 
-    # 1. GATEKEEPER (CPU - RF è veloce in batch)
+    # --- 1. GATEKEEPER ---
     gate_probs_all = clf_gate.predict_proba(X_scaled)
-    # Assumiamo che la classe '2' (Rare) sia all'indice 1 del Gatekeeper
-    # Se il gatekeeper è binario (Comune vs Raro), l'indice 1 è il sospetto raro
-    prob_is_rare = gate_probs_all[:, 1] 
+    
+    # CORREZIONE: Trova l'indice della classe 2 (Rare) dinamicamente
+    classes_gate = clf_gate.classes_
+    try:
+        idx_rare = np.where(classes_gate == rare_label_merged)[0][0]
+        prob_is_rare = gate_probs_all[:, idx_rare]
+    except IndexError:
+        # Se per qualche motivo la classe 2 non esiste nel modello
+        prob_is_rare = np.zeros(n_samples)
 
+    # Chi passa il gate?
     mask_to_specialist = (prob_is_rare >= gate_threshold)
     mask_to_generalist = ~mask_to_specialist
+    status_flags[mask_to_specialist] = "Sent_to_Specialist"
 
-    # 2. GENERALIST (Batch su tutto ciò che non è sospetto raro)
+    # --- 2. GENERALIST (Percorso Diretto) ---
     if np.any(mask_to_generalist):
         X_gen = X_scaled[mask_to_generalist]
         final_preds[mask_to_generalist] = clf_gen.predict(X_gen)
         final_probs[mask_to_generalist] = np.max(clf_gen.predict_proba(X_gen), axis=1)
 
-    # 3. SPECIALIST (TabPFN su GPU - Qui avviene la magia)
+    # --- 3. SPECIALIST ---
     if np.any(mask_to_specialist):
         X_spec = X_scaled[mask_to_specialist]
-        
-        # TabPFN riconosce automaticamente la GPU se disponibile
-        spec_preds_raw = clf_spec.predict(X_spec)
+        spec_preds = clf_spec.predict(X_spec)
         spec_probs_all = clf_spec.predict_proba(X_spec)
         spec_probs = np.max(spec_probs_all, axis=1)
         
-        # Logica di raffinamento (Confidence Check)
-        # Se TabPFN predice una rara (es. label 2, 3, 4) ma con bassa confidenza
-        # lo rimandiamo al generalista
-        is_predicted_rare = np.isin(spec_preds_raw, [2, 3, 4])
-        mask_low_conf = is_predicted_rare & (spec_probs < spec_threshold)
+        # Confidence Check (Soglia TabPFN)
+        mask_uncertain_rare = (spec_preds == rare_label_merged) & (spec_probs < spec_threshold)
+        spec_preds[mask_uncertain_rare] = 99 # Diventa Falso Allarme
         
-        # Quelli confermati rari
-        mask_confirmed = is_predicted_rare & ~mask_low_conf
+        mask_false_alarm = (spec_preds == 99)
         
-        # Prepariamo i risultati dello specialist
-        temp_preds = spec_preds_raw.copy()
-        temp_status = np.full(len(X_spec), "Confirmed_Rare", dtype=object)
-        
-        # Quelli che TabPFN scarta o sono incerti vanno al Generalista
-        mask_reject = ~mask_confirmed
-        if np.any(mask_reject):
-            X_retry = X_spec[mask_reject]
-            temp_preds[mask_reject] = clf_gen.predict(X_retry)
-            spec_probs[mask_reject] = np.max(clf_gen.predict_proba(X_retry), axis=1)
-            temp_status[mask_reject] = "Rejected_by_Spec"
-
-        final_preds[mask_to_specialist] = temp_preds
-        final_probs[mask_to_specialist] = spec_probs
+        # Aggiornamento Status
+        temp_status = status_flags[mask_to_specialist]
+        temp_status[mask_false_alarm] = "Rejected_by_Spec"
+        temp_status[~mask_false_alarm] = "Confirmed_Rare"
         status_flags[mask_to_specialist] = temp_status
+        
+        # Se lo Specialist scarta, riprova col Generalista
+        if np.any(mask_false_alarm):
+            X_retry = X_spec[mask_false_alarm]
+            spec_preds[mask_false_alarm] = clf_gen.predict(X_retry)
+            spec_probs[mask_false_alarm] = np.max(clf_gen.predict_proba(X_retry), axis=1)
+            
+        final_preds[mask_to_specialist] = spec_preds
+        final_probs[mask_to_specialist] = spec_probs
 
     return final_preds, final_probs, status_flags
 
