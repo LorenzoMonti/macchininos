@@ -529,9 +529,7 @@ def augment_data_gaussian(X, y, target_count=500, noise_scale=0.02):
 
 def train_hierarchical_classifier(X_train, y_train, rare_classes=[2, 3, 4], use_augmentation=False):
     """
-    Funnel Strategy.
-    use_augmentation=False -> Usa i dati puri (~500 Rare vs ~500 Comuni).
-    use_augmentation=True  -> Gonfia le rare a 1000 vs 1000 Comuni.
+    Versione Robust per TabPFN (gestisce grandi quantità di rare).
     """
     strategy_name = "Augmented" if use_augmentation else "Pure Data"
     print(f"\n   🏗️  Training Funnel ({strategy_name} Strategy)...")
@@ -554,23 +552,35 @@ def train_hierarchical_classifier(X_train, y_train, rare_classes=[2, 3, 4], use_
     X_rare = X_train[mask_rare]
     y_rare = np.full(len(X_rare), MERGED_LABEL)
     
+    # LIMITI TABPFN
+    MAX_TOTAL = 1024
+    MIN_COMMON = 100 # Vogliamo almeno 100 stelle comuni per addestrare il "falso allarme"
+    
     if use_augmentation:
-        # STRATEGIA A: AUGMENTATION (1000 vs 1000)
-        print(f"            Augmenting Rare (Target: 1000)...")
-        X_rare_final, y_rare_final = augment_data_gaussian(X_rare, y_rare, target_count=1000, noise_scale=0.03)
-        n_slots_common = len(y_rare_final) # 1:1 ratio
+        # Se usiamo augmentation, puntiamo a un bilanciamento fisso (es. 500 vs 500)
+        X_rare_final, y_rare_final = augment_data_gaussian(X_rare, y_rare, target_count=500, noise_scale=0.03)
+        n_slots_common = 500
     else:
-        # STRATEGIA B: DATI PURI (120 vs 500)
-        # Non tocchiamo le rare. Sono poche ma buone.
-        X_rare_final, y_rare_final = X_rare, y_rare
-        # Prendiamo un po' più di comuni per coprire la varianza, ma non troppe
-        # TabPFN regge bene fino a 1024 totali.
-        # Abbiamo ~120 rare. Possiamo mettere ~800 comuni senza problemi.
-        n_slots_common = min(800, 1024 - len(y_rare_final))
+        # STRATEGIA DATI PURI
+        # Se le rare sono troppe per TabPFN, dobbiamo campionarle
+        max_rare_allowed = MAX_TOTAL - MIN_COMMON # 924
+        
+        if len(X_rare) > max_rare_allowed:
+            print(f"            ⚠️ Troppe rare ({len(X_rare)}). Campionamento a {max_rare_allowed} per TabPFN...")
+            idx_rare_sampled = np.random.choice(len(X_rare), size=max_rare_allowed, replace=False)
+            X_rare_final = X_rare[idx_rare_sampled]
+            y_rare_final = y_rare[idx_rare_sampled]
+            n_slots_common = MIN_COMMON
+        else:
+            X_rare_final, y_rare_final = X_rare, y_rare
+            n_slots_common = MAX_TOTAL - len(y_rare_final)
 
     # Selezione Comuni (Safety Net)
     mask_common = ~mask_rare
     X_common_all = X_train[mask_common]
+    
+    # Evitiamo di chiedere più comuni di quante ne abbiamo (safety check)
+    n_slots_common = min(n_slots_common, len(X_common_all))
     
     idx_common = np.random.choice(len(X_common_all), size=n_slots_common, replace=False)
     X_bg = X_common_all[idx_common]
@@ -581,9 +591,9 @@ def train_hierarchical_classifier(X_train, y_train, rare_classes=[2, 3, 4], use_
     y_spec = np.hstack([y_rare_final, y_bg])
     
     print(f"      [2/3] Training Specialist (TabPFN): {len(X_spec)} samples.")
-    print(f"            ({len(y_rare_final)} Rare Reali vs {len(y_bg)} Comuni Random)")
+    print(f"            ({len(y_rare_final)} Rare vs {len(y_bg)} Comuni)")
     
-    clf_specialist = TabPFNClassifier(device='cuda', n_estimators=32)
+    clf_specialist = TabPFNClassifier(device='auto', n_estimators=32)
     clf_specialist.fit(X_spec, y_spec)
     
     # --- 3. GENERALIST (XGBoost) ---
