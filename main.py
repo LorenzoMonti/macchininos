@@ -149,7 +149,7 @@ if __name__ == "__main__":
         )
 
     # 7. SALVATAGGIO SISTEMA COMPLETO
-    exp_name = f"Funnel_{best_filter_name}_TabPFN"
+    exp_name = f"Funnel_{best_filter_name}_TabPFN_light"
     print(f"\n5. Salvataggio Modelli in '{SAVE_DIR}/{exp_name}'...")
     
     save_hierarchical_system(

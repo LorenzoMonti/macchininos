@@ -24,6 +24,7 @@ ID_COLUMN = "sourceid"
 
 TRAINING_PATH_CHECK = "data/campioneLARGE05_allinfo.csv"
 CONTAMINANTS_PATH_CHECK = "data/contaminants/contaminants.csv"
+PROCESSED_FULL_PATH = "evaluation/processed_full_catalog.csv"
 
 # Chunk molto grande per saturare la GPU (500k-800k righe alla volta)
 CHUNK_SIZE = 600000 
@@ -34,17 +35,17 @@ def get_args():
     parser.add_argument("--num_shards", type=int, default=4, help="Numero totale di GPU")
     return parser.parse_args()
 
-def load_blacklist_ids():
-    """Carica in memoria gli ID già noti per saltarli"""
+def load_comprehensive_blacklist():
     blacklist = set()
-    for path in [TRAINING_PATH_CHECK, CONTAMINANTS_PATH_CHECK]:
+    for path in [TRAINING_PATH_CHECK, CONTAMINANTS_PATH_CHECK, PROCESSED_FULL_PATH]:
         if path and os.path.exists(path):
             try:
-                # Leggiamo solo la colonna ID come stringa
+                # Carichiamo solo la colonna sourceid
                 df = pd.read_csv(path, usecols=[ID_COLUMN], dtype={ID_COLUMN: str})
                 blacklist.update(df[ID_COLUMN].values)
-                del df; gc.collect()
-            except: pass
+                print(f"   Aggiunti {len(df)} ID da {path}")
+            except Exception as e:
+                print(f"   Errore nel caricamento di {path}: {e}")
     return blacklist
 
 def run_pipeline():
@@ -80,7 +81,7 @@ def run_pipeline():
         f.write(",".join(csv_header) + "\n")
 
     # 3. Caricamento Blacklist
-    blacklist_ids = load_blacklist_ids()
+    blacklist_ids = load_comprehensive_blacklist()
     print(f"{prefix} Blacklist caricata: {len(blacklist_ids)} sorgenti ignorate.")
 
     # 4. Processamento a Chunk
