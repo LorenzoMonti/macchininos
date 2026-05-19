@@ -27,7 +27,9 @@ CONTAMINANTS_PATH_CHECK = "data/contaminants/contaminants.csv"
 PROCESSED_FULL_PATH = "evaluation/processed_full_catalog.csv" # None per il modello Full
 
 # Chunk molto grande per saturare la GPU (500k-800k righe alla volta)
-CHUNK_SIZE = 600000 
+CHUNK_SIZE = 600000
+# Log intra-chunk: numero di sorgenti valide per sub-batch
+SUB_BATCH_LOG = 20000
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -87,7 +89,7 @@ def run_pipeline():
     except Exception as e:
         print(f"{prefix} ❌ Errore caricamento: {e}")
         return
-
+    
     # 2. Setup Output
     output_dir = "evaluation"
     os.makedirs(output_dir, exist_ok=True)
@@ -95,7 +97,7 @@ def run_pipeline():
     
     # Header del CSV
     csv_header = ["id", "status", "pred_label", "confidence", "stage", "filter_score"]
-    with open(MY_OUTPUT_PATH, 'w') as f:
+    with open(MY_OUTPUT_PATH, 'w', encoding="utf-8") as f:
         f.write(",".join(csv_header) + "\n")
 
     # 3. Caricamento Blacklist
@@ -141,67 +143,74 @@ def run_pipeline():
         X_scaled = scaler.transform(valid_chunk[features].values)
         ids = valid_chunk[ID_COLUMN].values
 
-        # --- FASE 1: FILTRO ANOMALIE (GPU Batch) ---
-        if filter_type == 'Autoencoder':
-            # Predizione massiva su GPU
-            reconstructions = filter_model.predict(X_scaled, batch_size=4096, verbose=0)
-            filter_scores = np.mean(np.power(X_scaled - reconstructions, 2), axis=1)
-            is_anomaly = filter_scores > ae_threshold
-        else:
-            # Isolation Forest (CPU, ma molto veloce in batch)
-            is_anomaly = filter_model.predict(X_scaled) == -1
-            filter_scores = filter_model.decision_function(X_scaled)
+        # --- LOOP SUB-BATCH (per logging intra-chunk ad alta risoluzione) ---
+        n_valid = len(ids)
+        sub_starts = range(0, n_valid, SUB_BATCH_LOG)
 
-        # Dividiamo il chunk in Inliers (vanno al funnel) e Outliers (bloccati)
-        mask_inlier = ~is_anomaly
-        
-        # --- PREPARAZIONE RISULTATI OUTLIERS (Anomalie) ---
-        results = []
-        if np.any(is_anomaly):
-            anom_ids = ids[is_anomaly]
-            anom_scores = filter_scores[is_anomaly]
-            for i in range(len(anom_ids)):
-                results.append([anom_ids[i], "ANOMALY", "None", 0.0, "Filter", round(anom_scores[i], 6)])
+        for sb_idx, sb_start in enumerate(sub_starts):
+            sb_end = min(sb_start + SUB_BATCH_LOG, n_valid)
+            X_sb  = X_scaled[sb_start:sb_end]
+            ids_sb = ids[sb_start:sb_end]
 
-        # --- FASE 2: FUNNEL (GPU Batch) ---
-        if np.any(mask_inlier):
-            X_funnel = X_scaled[mask_inlier]
-            ids_funnel = ids[mask_inlier]
-            scores_funnel = filter_scores[mask_inlier]
-            
-            # Chiamata alla funzione BATCH ottimizzata
-            y_pred, y_conf, y_stage = predict_hierarchical_batch(
-                X_funnel, models_dict, gate_threshold=0.05, spec_threshold=0.90
-            )
-            
-            # Formattazione risultati
-            for i in range(len(ids_funnel)):
-                label = str(y_pred[i])
-                if le:
-                    try: label = le.inverse_transform([y_pred[i]])[0]
-                    except: pass
-                
-                results.append([
-                    ids_funnel[i],
-                    "OK" if y_conf[i] >= 0.5 else "UNCERTAIN",
-                    label,
-                    round(y_conf[i], 4),
-                    y_stage[i],
-                    round(scores_funnel[i], 6)
-                ])
+            # --- FASE 1: FILTRO ANOMALIE (GPU Batch) ---
+            if filter_type == 'Autoencoder':
+                reconstructions = filter_model.predict(X_sb, batch_size=4096, verbose=0)
+                filter_scores = np.mean(np.power(X_sb - reconstructions, 2), axis=1)
+                is_anomaly = filter_scores > ae_threshold
+            else:
+                is_anomaly = filter_model.predict(X_sb) == -1
+                filter_scores = filter_model.decision_function(X_sb)
 
-        # --- D. SCRITTURA SU DISCO ---
-        if results:
-            df_out = pd.DataFrame(results, columns=csv_header)
-            df_out.to_csv(MY_OUTPUT_PATH, mode='a', header=False, index=False)
-            processed_count += len(df_out)
+            mask_inlier = ~is_anomaly
 
-        # Log di progresso ogni chunk
-        elapsed = (time.time() - start_time) / 60
-        print(f"{prefix} Chunk {chunk_idx} completato. Processate: {processed_count} stelle. ({elapsed:.1f} min)")
-        
-        # Pulizia memoria aggressiva
-        del chunk, valid_chunk, X_scaled, results, df_out
+            # --- PREPARAZIONE RISULTATI OUTLIERS ---
+            results = []
+            if np.any(is_anomaly):
+                anom_ids    = ids_sb[is_anomaly]
+                anom_scores = filter_scores[is_anomaly]
+                for i in range(len(anom_ids)):
+                    results.append([anom_ids[i], "ANOMALY", "None", 0.0, "Filter", round(anom_scores[i], 6)])
+
+            # --- FASE 2: FUNNEL (GPU Batch) ---
+            if np.any(mask_inlier):
+                X_funnel      = X_sb[mask_inlier]
+                ids_funnel    = ids_sb[mask_inlier]
+                scores_funnel = filter_scores[mask_inlier]
+
+                y_pred, y_conf, y_stage = predict_hierarchical_batch(
+                    X_funnel, models_dict, gate_threshold=0.05, spec_threshold=0.90
+                )
+
+                for i in range(len(ids_funnel)):
+                    label = str(y_pred[i])
+                    if le:
+                        try: label = le.inverse_transform([y_pred[i]])[0]
+                        except: pass
+                    results.append([
+                        ids_funnel[i],
+                        "OK" if y_conf[i] >= 0.5 else "UNCERTAIN",
+                        label,
+                        round(y_conf[i], 4),
+                        y_stage[i],
+                        round(scores_funnel[i], 6)
+                    ])
+
+            # --- D. SCRITTURA SU DISCO ---
+            if results:
+                df_out = pd.DataFrame(results, columns=csv_header)
+                df_out.to_csv(MY_OUTPUT_PATH, mode='a', header=False, index=False)
+                processed_count += len(df_out)
+                del df_out
+
+            # Log intra-chunk
+            elapsed = (time.time() - start_time) / 60
+            print(f"{prefix} Chunk {chunk_idx}.{sb_idx} completato. Processate: {processed_count} stelle. ({elapsed:.2f} min)")
+
+            del X_sb, ids_sb, results
+            gc.collect()
+
+        # Pulizia memoria fine chunk
+        del chunk, valid_chunk, X_scaled, ids
         gc.collect()
 
     print(f"\n✅ {prefix} LAVORO COMPLETATO. Totale: {processed_count} stelle salvate in {MY_OUTPUT_PATH}")

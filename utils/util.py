@@ -929,7 +929,7 @@ def save_hierarchical_system(save_dir, exp_name, scaler, filter_model, filter_ty
         "ae_threshold": float(ae_thresh) if ae_thresh is not None else None,
         "exp_name": exp_name
     }
-    with open(os.path.join(path, "metadata.json"), "w") as f:
+    with open(os.path.join(path, "metadata.json"), "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=4)
         
     print("✅ Salvataggio completato!")
@@ -947,7 +947,7 @@ def load_hierarchical_system(model_dir, exp_name):
 
     # 1. Metadata
     meta_path = os.path.join(path, "metadata.json")
-    with open(meta_path, 'r') as f:
+    with open(meta_path, 'r', encoding="utf-8") as f:
         metadata = json.load(f)
 
     # 2. Scaler & LabelEncoder

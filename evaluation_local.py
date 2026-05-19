@@ -84,12 +84,12 @@ def run_local_pipeline():
     if os.path.exists(OUTPUT_PATH): os.remove(OUTPUT_PATH)
     
     csv_header = ["id", "status", "pred_label", "confidence", "stage", "filter_score"]
-    with open(OUTPUT_PATH, 'w') as f: f.write(",".join(csv_header) + "\n")
+    with open(OUTPUT_PATH, 'w', encoding="utf-8") as f: f.write(",".join(csv_header) + "\n")
 
     # 4. Elaborazione Streaming
     print(f"\n2️⃣  AVVIO ELABORAZIONE...")
     # Stima righe per la barra
-    with open(NEW_DATA_PATH, 'rb') as f: est_lines = sum(1 for _ in f) - 1
+    with open(NEW_DATA_PATH, 'rb', encoding="utf-8") as f: est_lines = sum(1 for _ in f) - 1
     
     cols_to_load = list(set([ID_COLUMN] + features))
     reader = pd.read_csv(NEW_DATA_PATH, usecols=cols_to_load, chunksize=CHUNK_SIZE)
