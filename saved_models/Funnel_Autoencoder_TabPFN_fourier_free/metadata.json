@@ -1,0 +1,22 @@
+{
+    "features": [
+        "numberofgbandcleanepochs",
+        "p1",
+        "intaverageg",
+        "intaveragegerror",
+        "peaktopeakg",
+        "peaktopeakgerror",
+        "phirise",
+        "lcqualityflagg",
+        "nhg1",
+        "uniformityindexg"
+    ],
+    "rare_classes": [
+        2,
+        3,
+        4
+    ],
+    "filter_type": "Autoencoder",
+    "ae_threshold": 5.317408927409627e-05,
+    "exp_name": "Funnel_Autoencoder_TabPFN_fourier_free"
+}

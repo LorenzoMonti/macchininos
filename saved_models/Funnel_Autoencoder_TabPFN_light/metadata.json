@@ -1,0 +1,25 @@
+{
+    "features": [
+        "phi21",
+        "ephi21",
+        "numberofgbandcleanepochs",
+        "p1",
+        "intaverageg",
+        "intaveragegerror",
+        "peaktopeakg",
+        "peaktopeakgerror",
+        "r21",
+        "er21",
+        "phirise",
+        "lcqualityflagg",
+        "nhg1"
+    ],
+    "rare_classes": [
+        2,
+        3,
+        4
+    ],
+    "filter_type": "Autoencoder",
+    "ae_threshold": 4.01374222260036e-05,
+    "exp_name": "Funnel_Autoencoder_TabPFN_light"
+}
