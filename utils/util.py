@@ -562,12 +562,12 @@ def train_hierarchical_classifier(X_train, y_train, rare_classes=[2, 3, 4], use_
         n_slots_common = 500
     else:
         # STRATEGIA DATI PURI
-        # Se le rare sono troppe per TabPFN, dobbiamo campionarle
-        max_rare_allowed = MAX_TOTAL - MIN_COMMON # 924
-        
-        if len(X_rare) > max_rare_allowed:
+        # Downsample solo se le rare da sole superano il budget totale di TabPFN
+        if len(X_rare) >= MAX_TOTAL:
+            max_rare_allowed = MAX_TOTAL - MIN_COMMON
             print(f"            ⚠️ Troppe rare ({len(X_rare)}). Campionamento a {max_rare_allowed} per TabPFN...")
-            idx_rare_sampled = np.random.choice(len(X_rare), size=max_rare_allowed, replace=False)
+            rng = np.random.default_rng(42)
+            idx_rare_sampled = rng.choice(len(X_rare), size=max_rare_allowed, replace=False)
             X_rare_final = X_rare[idx_rare_sampled]
             y_rare_final = y_rare[idx_rare_sampled]
             n_slots_common = MIN_COMMON
