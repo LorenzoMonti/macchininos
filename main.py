@@ -1,3 +1,4 @@
+import argparse
 import pandas as pd
 import numpy as np
 import os
@@ -11,17 +12,23 @@ import tensorflow as tf
 # Import delle utility (assumendo che utils/util.py contenga le nuove funzioni aggiornate)
 from utils.util import *
 
-# --- CONFIGURAZIONE FEATURES ---
-# features base ['p1', 'peaktopeakg', 'peaktopeakrp', 'peaktopeakbp', 'phi21', 'r21', 'phi31', 'r31', 'phirise']
-# features selector ['p1','nhg2', 'a2', 'r21', 'phi2', 'peaktopeakg', 'a1', 'er21', 'phi21', 'ephi21', 'peaktopeakgerror', 'intaveragegerror', 'phi1', 'lcqualityflagg', 'peaktopeakbp', 'phirise', 'peaktopeakrp', 'nhg1']
-# features Ale ['phi21', 'ephi21', 'phi31', 'ephi31', 'numberofgbandcleanepochs', 'p1', 'p1error', 'intaverageg', 'intaveragegerror', 'peaktopeakg', 'peaktopeakgerror', 'r21', 'er21', 'r31', 'er31', 'phirise', 'lcqualityflagg', 'nhg1']
+FEATURES_FULL = ['phi21', 'ephi21', 'phi31', 'ephi31', 'numberofgbandcleanepochs',
+                 'p1', 'intaverageg', 'intaveragegerror', 'peaktopeakg',
+                 'peaktopeakgerror', 'r21', 'er21', 'r31', 'er31', 'phirise',
+                 'lcqualityflagg', 'nhg1']
 
-features = ['phi21', 'ephi21', 'phi31', 'ephi31', 'numberofgbandcleanepochs', 
-            'p1', 'intaverageg', 'intaveragegerror', 'peaktopeakg', 
-            'peaktopeakgerror', 'r21', 'er21', 'r31', 'er31', 'phirise', 
-            'lcqualityflagg', 'nhg1']
+FEATURES_LIGHT = ['phi21', 'ephi21', 'numberofgbandcleanepochs',
+                  'p1', 'intaverageg', 'intaveragegerror', 'peaktopeakg',
+                  'peaktopeakgerror', 'r21', 'er21', 'phirise',
+                  'lcqualityflagg', 'nhg1']
 
-features_name = "Ale_features"
+parser = argparse.ArgumentParser()
+parser.add_argument('--variant', choices=['full', 'light'], default='full',
+                    help='Feature set: full (17) or light (13)')
+args, _ = parser.parse_known_args()
+
+features      = FEATURES_FULL if args.variant == 'full' else FEATURES_LIGHT
+features_name = args.variant
 
 # --- CONFIGURAZIONE PATH E PARAMETRI ---
 TRAINING_PATH = "data/campioneLARGE05_allinfo.csv"
@@ -149,7 +156,7 @@ if __name__ == "__main__":
         )
 
     # 7. SALVATAGGIO SISTEMA COMPLETO
-    exp_name = f"Funnel_{best_filter_name}_TabPFN_light"
+    exp_name = f"Funnel_{best_filter_name}_TabPFN_{features_name}"
     print(f"\n5. Salvataggio Modelli in '{SAVE_DIR}/{exp_name}'...")
     
     save_hierarchical_system(
