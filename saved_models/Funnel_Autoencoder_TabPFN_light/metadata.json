@@ -20,6 +20,6 @@
         4
     ],
     "filter_type": "Autoencoder",
-    "ae_threshold": 2.589653369757528e-05,
+    "ae_threshold": 3.036105020433957e-05,
     "exp_name": "Funnel_Autoencoder_TabPFN_light"
 }
